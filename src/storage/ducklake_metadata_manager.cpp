@@ -1718,9 +1718,9 @@ string DuckLakeMetadataManager::BuildBucketPartitionPruningClause(DuckLakeTableE
 			in_list += StringUtil::Format("%s", SQLString(v));
 		}
 		string clause = StringUtil::Format(
-		    "data.data_file_id IN (SELECT data_file_id FROM {METADATA_CATALOG}.ducklake_file_partition_value "
+		    "data.data_file_id IN (SELECT data_file_id FROM %s "
 		    "WHERE table_id = %d AND partition_key_index = %d AND partition_value IN (%s))",
-		    table_id.index, field.partition_key_index, in_list);
+		    GetFilePartitionValueSource(table_id), table_id.index, field.partition_key_index, in_list);
 
 		if (!result.empty()) {
 			result += " AND ";
@@ -1728,6 +1728,28 @@ string DuckLakeMetadataManager::BuildBucketPartitionPruningClause(DuckLakeTableE
 		result += clause;
 	}
 	return result;
+}
+
+string DuckLakeMetadataManager::GetDataFileSource(TableIndex table_id) {
+	return "{METADATA_CATALOG}.ducklake_data_file";
+}
+
+string DuckLakeMetadataManager::GetDeleteFileSource(TableIndex table_id) {
+	return StringUtil::Format(R"((
+    SELECT *
+    FROM {METADATA_CATALOG}.ducklake_delete_file
+    WHERE table_id=%d  AND {SNAPSHOT_ID} >= begin_snapshot
+          AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
+    ))",
+	                          table_id.index);
+}
+
+string DuckLakeMetadataManager::GetFileColumnStatsJoinSource(TableIndex table_id, idx_t column_field_index) {
+	return "{METADATA_CATALOG}.ducklake_file_column_stats";
+}
+
+string DuckLakeMetadataManager::GetFilePartitionValueSource(TableIndex table_id) {
+	return "{METADATA_CATALOG}.ducklake_file_partition_value";
 }
 
 vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLakeTableEntry &table,
@@ -1761,9 +1783,10 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLake
 		auto alias = StringUtil::Format("stats_%d", NumericCast<int64_t>(i));
 		stats_select_list += StringUtil::Format(", %s.min_value, %s.max_value", alias.c_str(), alias.c_str());
 		stats_join_list += StringUtil::Format(
-		    "\nLEFT JOIN {METADATA_CATALOG}.ducklake_file_column_stats %s ON %s.data_file_id = data.data_file_id AND "
+		    "\nLEFT JOIN %s %s ON %s.data_file_id = data.data_file_id AND "
 		    "%s.table_id = data.table_id AND %s.column_id = %d",
-		    alias.c_str(), alias.c_str(), alias.c_str(), alias.c_str(), NumericCast<int64_t>(dfc.column_field_index));
+		    GetFileColumnStatsJoinSource(table_id, dfc.column_field_index), alias.c_str(), alias.c_str(), alias.c_str(),
+		    alias.c_str(), NumericCast<int64_t>(dfc.column_field_index));
 
 		// Generate ORDER BY clause to optimize Top-N queries - order files by their min/max stats
 		// so we find satisfying rows early and can skip remaining files via dynamic filter pruning.
@@ -1815,17 +1838,13 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLake
 	// Add base query
 	query += StringUtil::Format(R"(
 SELECT %s
-FROM {METADATA_CATALOG}.ducklake_data_file data
+FROM %s data
 %s
-LEFT JOIN (
-    SELECT *
-    FROM {METADATA_CATALOG}.ducklake_delete_file
-    WHERE table_id=%d  AND {SNAPSHOT_ID} >= begin_snapshot
-          AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
-    ) del ON del.data_file_id = data.data_file_id
+LEFT JOIN %s del ON del.data_file_id = data.data_file_id
 WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL)
 		)",
-	                            select_list, stats_join_list, table_id.index, table_id.index);
+	                            select_list, GetDataFileSource(table_id), stats_join_list,
+	                            GetDeleteFileSource(table_id), table_id.index);
 
 	// Add WHERE clause from filters if it was generated
 	if (!where_clause.empty()) {
@@ -2172,16 +2191,12 @@ DuckLakeMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, Duc
 	// Add base query
 	query += StringUtil::Format(R"(
 SELECT data.data_file_id, del.delete_file_id, data.record_count, %s
-FROM {METADATA_CATALOG}.ducklake_data_file data
-LEFT JOIN (
-	SELECT *
-    FROM {METADATA_CATALOG}.ducklake_delete_file
-    WHERE table_id=%d  AND {SNAPSHOT_ID} >= begin_snapshot
-          AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
-    ) del USING (data_file_id)
+FROM %s data
+LEFT JOIN %s del USING (data_file_id)
 WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL)
 		)",
-	                            select_list, table_id.index, table_id.index);
+	                            select_list, GetDataFileSource(table_id), GetDeleteFileSource(table_id),
+	                            table_id.index);
 
 	// Add WHERE clause from filters if it was generated
 	if (!where_clause.empty()) {
@@ -3293,6 +3308,11 @@ WHERE data.table_id = %d
 ORDER BY data.data_file_id;
 )",
 	                          table_id.index);
+}
+
+unique_ptr<QueryResult> DuckLakeMetadataManager::ReadFileColumnStatsForTable(DuckLakeSnapshot snapshot,
+                                                                             TableIndex table_id) {
+	return Query(snapshot, ReadFileColumnStatsForTableSql(table_id));
 }
 
 string DuckLakeMetadataManager::GetPathForSchema(SchemaIndex schema_id,
