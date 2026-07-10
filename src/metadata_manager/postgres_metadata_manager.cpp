@@ -128,6 +128,81 @@ string PostgresMetadataManager::GetLatestSnapshotQuery() const {
 	)";
 }
 
+string PostgresMetadataManager::WrapPostgresQuery(const string &pg_sql) const {
+	auto escaped = StringUtil::Replace(pg_sql, "'", "''");
+	return "SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, '" + escaped + "')";
+}
+
+vector<DuckLakeGlobalStatsInfo> PostgresMetadataManager::GetGlobalTableStats(DuckLakeSnapshot snapshot,
+                                                                             TableIndex table_id) {
+	// Run the stats lookup server-side so Postgres applies the table_id predicate instead of
+	// DuckDB scanning the attached stats tables with ctid-range COPYs.
+	auto query = WrapPostgresQuery(StringUtil::Format(R"(
+SELECT table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, min_value, max_value, extra_stats
+FROM {METADATA_SCHEMA_ESCAPED}.ducklake_table_stats
+LEFT JOIN {METADATA_SCHEMA_ESCAPED}.ducklake_table_column_stats USING (table_id)
+WHERE table_id = %llu
+  AND record_count IS NOT NULL
+  AND file_size_bytes IS NOT NULL
+ORDER BY table_id)",
+	                                                  table_id.index));
+	auto result = Query(snapshot, query);
+	return ParseGlobalTableStats(*result);
+}
+
+unique_ptr<QueryResult> PostgresMetadataManager::ReadFileColumnStatsForTable(DuckLakeSnapshot snapshot,
+                                                                             TableIndex table_id) {
+	auto query = WrapPostgresQuery(StringUtil::Format(R"(
+SELECT data.data_file_id, data.record_count, data.file_size_bytes,
+       stats.column_id, stats.value_count, stats.null_count, stats.min_value, stats.max_value,
+       stats.contains_nan, stats.extra_stats
+FROM {METADATA_SCHEMA_ESCAPED}.ducklake_data_file data
+LEFT JOIN {METADATA_SCHEMA_ESCAPED}.ducklake_file_column_stats stats ON stats.data_file_id = data.data_file_id
+WHERE data.table_id = %d
+  AND {SNAPSHOT_ID} >= data.begin_snapshot
+  AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL)
+ORDER BY data.data_file_id)",
+	                                                  table_id.index));
+	return Query(snapshot, query);
+}
+
+string PostgresMetadataManager::GetDataFileSource(TableIndex table_id) {
+	// Match the table_id / snapshot predicates of the enclosing query (which still applies them)
+	// so Postgres only returns the table's live files.
+	return "(" +
+	       WrapPostgresQuery(StringUtil::Format(
+	           "SELECT * FROM {METADATA_SCHEMA_ESCAPED}.ducklake_data_file WHERE table_id=%d AND "
+	           "{SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)",
+	           table_id.index)) +
+	       ")";
+}
+
+string PostgresMetadataManager::GetDeleteFileSource(TableIndex table_id) {
+	return "(" +
+	       WrapPostgresQuery(StringUtil::Format(
+	           "SELECT * FROM {METADATA_SCHEMA_ESCAPED}.ducklake_delete_file WHERE table_id=%d AND "
+	           "{SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)",
+	           table_id.index)) +
+	       ")";
+}
+
+string PostgresMetadataManager::GetFileColumnStatsJoinSource(TableIndex table_id, idx_t column_field_index) {
+	return "(" +
+	       WrapPostgresQuery(StringUtil::Format(
+	           "SELECT data_file_id, table_id, column_id, min_value, max_value FROM "
+	           "{METADATA_SCHEMA_ESCAPED}.ducklake_file_column_stats WHERE table_id=%d AND column_id=%d",
+	           table_id.index, NumericCast<int64_t>(column_field_index))) +
+	       ")";
+}
+
+string PostgresMetadataManager::GetFilePartitionValueSource(TableIndex table_id) {
+	return "(" +
+	       WrapPostgresQuery(StringUtil::Format(
+	           "SELECT * FROM {METADATA_SCHEMA_ESCAPED}.ducklake_file_partition_value WHERE table_id=%d",
+	           table_id.index)) +
+	       ")";
+}
+
 string PostgresMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id) {
 	string select_list = "data_file_id";
 	for (const auto &stat : req.referenced_stats) {

@@ -342,6 +342,9 @@ public:
 	//! Caller substitutes `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` and executes via the commit context's executor.
 	static string ReadInlinedDataAggregatesSql(const string &inlined_table_name, const string &select_list);
 	static string ReadFileColumnStatsForTableSql(TableIndex table_id);
+	//! Reads the per-file column stats of a table's live files at the given snapshot. Backends can
+	//! override this to run the predicates server-side instead of scanning the attached tables.
+	virtual unique_ptr<QueryResult> ReadFileColumnStatsForTable(DuckLakeSnapshot snapshot, TableIndex table_id);
 	virtual shared_ptr<DuckLakeInlinedData> TransformInlinedData(QueryResult &result,
 	                                                             const vector<LogicalType> &expected_types);
 
@@ -375,6 +378,23 @@ protected:
 	virtual string GetLatestSnapshotQuery() const;
 
 	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id);
+
+	//! FROM-clause sources for the per-table file-listing queries (GetFilesForTable /
+	//! GetExtendedFilesForTable). The defaults return the attached metadata tables; backends can
+	//! override them with a parenthesized subquery that applies the table_id / snapshot predicates
+	//! server-side so only the matching rows are transferred (see PostgresMetadataManager).
+	//! The returned SQL may contain `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` style placeholders -
+	//! they are substituted when the enclosing query is executed.
+	//! Source of `ducklake_data_file` rows; the enclosing query filters on table_id + snapshot bounds.
+	virtual string GetDataFileSource(TableIndex table_id);
+	//! Subquery over `ducklake_delete_file` restricted to table_id + snapshot bounds.
+	virtual string GetDeleteFileSource(TableIndex table_id);
+	//! Source of `ducklake_file_column_stats` rows joined for dynamic (Top-N) filters; the join
+	//! restricts on data_file_id, table_id and column_id.
+	virtual string GetFileColumnStatsJoinSource(TableIndex table_id, idx_t column_field_index);
+	//! Source of `ducklake_file_partition_value` rows for bucket-partition pruning; the enclosing
+	//! query filters on table_id + partition_key_index + partition_value.
+	virtual string GetFilePartitionValueSource(TableIndex table_id);
 
 	//! Wrap field selections with list aggregation of struct objects (DBMS-specific)
 	//! For DuckDB: LIST({'key1': val1, 'key2': val2, ...})

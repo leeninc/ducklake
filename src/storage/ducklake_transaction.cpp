@@ -1378,6 +1378,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot s, string q) {
 		return metadata_manager->Query(s, q);
 	};
+	context.read_file_column_stats_for_table = [&](DuckLakeSnapshot s, TableIndex table_id) {
+		return metadata_manager->ReadFileColumnStatsForTable(s, table_id);
+	};
 	context.try_append_data_files = [&](DuckLakeSnapshot &snapshot, const vector<DuckLakeFileInfo> &files,
 	                                    const vector<DuckLakeTableInfo> &new_tables,
 	                                    vector<DuckLakeSchemaInfo> &new_schemas) {

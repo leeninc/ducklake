@@ -703,6 +703,12 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 		auto sql = SubstitutePlaceholders(std::move(q), snapshot);
 		return unique_ptr_cast<MaterializedQueryResult, QueryResult>(fresh_conn.Query(sql));
 	};
+	ctx.read_file_column_stats_for_table = [this](DuckLakeSnapshot snapshot,
+	                                              TableIndex table_id) -> unique_ptr<QueryResult> {
+		// Server-side commit runs on the metadata server itself; keep the plain attached-SQL read.
+		auto sql = SubstitutePlaceholders(DuckLakeMetadataManager::ReadFileColumnStatsForTableSql(table_id), snapshot);
+		return unique_ptr_cast<MaterializedQueryResult, QueryResult>(fresh_conn.Query(sql));
+	};
 	ctx.write_inlined_data = [this](DuckLakeSnapshot &, const vector<DuckLakeInlinedDataInfo> &new_data,
 	                                const vector<DuckLakeTableInfo> &, const vector<DuckLakeTableInfo> &) -> string {
 		return BuildInlinedDataInserts(new_data);
