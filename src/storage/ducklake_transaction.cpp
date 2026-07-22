@@ -1341,7 +1341,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
                                         const DuckLakeRetryConfig &retry_config) {
 	DuckLakeCommitContext context;
 	context.conflict_query_executor = [&](string q) -> unique_ptr<QueryResult> {
-		auto result = metadata_manager->Query(transaction_snapshot, q);
+		auto result = metadata_manager->QueryConflictInfo(transaction_snapshot, q);
 		if (result->HasError()) {
 			result->GetErrorObject().Throw("Failed to commit DuckLake transaction - failed to get snapshot and "
 			                               "snapshot changes for conflict resolution:");

@@ -203,6 +203,52 @@ string PostgresMetadataManager::GetFilePartitionValueSource(TableIndex table_id)
 	       ")";
 }
 
+string PostgresMetadataManager::GetCatalogTableSource(const string &table_name, bool snapshot_filtered) {
+	// The enclosing catalog-load query re-applies the snapshot predicates; applying them here as
+	// well means Postgres only returns the rows live at the snapshot instead of the full history.
+	string pg_sql = "SELECT * FROM {METADATA_SCHEMA_ESCAPED}." + table_name;
+	if (snapshot_filtered) {
+		pg_sql += " WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)";
+	}
+	return "(" + WrapPostgresQuery(pg_sql) + ")";
+}
+
+unique_ptr<QueryResult> PostgresMetadataManager::QueryConflictInfo(DuckLakeSnapshot snapshot, const string &query) {
+	// The conflict-detection queries are plain SQL over the metadata tables; run them wholesale in
+	// Postgres so the snapshot predicates are applied server-side.
+	auto pg_sql = StringUtil::Replace(query, "{METADATA_CATALOG}.", "{METADATA_SCHEMA_ESCAPED}.");
+	auto wrapped = WrapPostgresQuery(pg_sql);
+	return Query(snapshot, wrapped);
+}
+
+idx_t PostgresMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) {
+	auto sql = GetNetDataFileRowCountSql(table_id, GetInlinedDeletionTableName(table_id, snapshot));
+	auto pg_sql = StringUtil::Replace(sql, "{METADATA_CATALOG}.", "{METADATA_SCHEMA_ESCAPED}.");
+	auto wrapped = WrapPostgresQuery(pg_sql);
+	auto result = Query(snapshot, wrapped);
+	if (result->HasError()) {
+		result->GetErrorObject().Throw("Failed to get net data file row count from DuckLake: ");
+	}
+	for (auto &row : *result) {
+		return row.GetValue<idx_t>(0);
+	}
+	return 0;
+}
+
+idx_t PostgresMetadataManager::GetNetInlinedRowCount(const string &inlined_table_name, DuckLakeSnapshot snapshot) {
+	auto sql = GetNetInlinedRowCountSql(inlined_table_name);
+	auto pg_sql = StringUtil::Replace(sql, "{METADATA_CATALOG}.", "{METADATA_SCHEMA_ESCAPED}.");
+	auto wrapped = WrapPostgresQuery(pg_sql);
+	auto result = Query(snapshot, wrapped);
+	if (result->HasError()) {
+		result->GetErrorObject().Throw("Failed to get net inlined row count from DuckLake: ");
+	}
+	for (auto &row : *result) {
+		return row.GetValue<idx_t>(0);
+	}
+	return 0;
+}
+
 string PostgresMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id) {
 	string select_list = "data_file_id";
 	for (const auto &stat : req.referenced_stats) {
