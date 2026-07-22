@@ -218,11 +218,20 @@ public:
 	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot);
 	//! Transaction-free build of the catalog snapshot. Caller supplies a snapshot-aware query
 	//! executor (responsible for `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` substitution) plus the
-	//! data path and separator used for resolving stored relative paths.
+	//! data path and separator used for resolving stored relative paths. The optional table_source
+	//! callback provides the FROM-clause source for each catalog table (table name +
+	//! whether the read is bounded to live rows at {SNAPSHOT_ID}); when omitted the tables are read
+	//! through the attached metadata catalog.
 	static DuckLakeCatalogInfo
 	BuildCatalogForSnapshot(DuckLakeSnapshot snapshot,
 	                        const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-	                        const string &base_data_path, const string &separator);
+	                        const string &base_data_path, const string &separator,
+	                        std::function<string(const string &table_name, bool snapshot_filtered)> table_source = {});
+	//! Execute one of the commit-loop conflict-detection queries (snapshot + stats + changes,
+	//! files deleted after snapshot). The SQL passed here must stay portable to the metadata
+	//! backend's native dialect: backends may execute it server-side instead of through the
+	//! attached catalog.
+	virtual unique_ptr<QueryResult> QueryConflictInfo(DuckLakeSnapshot snapshot, const string &query);
 	virtual vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot, TableIndex table_id);
 	virtual vector<DuckLakeFileListEntry> GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                                                       const FilterPushdownInfo *filter_info = nullptr);
@@ -431,6 +440,10 @@ protected:
 	//! Source of `ducklake_file_partition_value` rows for bucket-partition pruning; the enclosing
 	//! query filters on table_id + partition_key_index + partition_value.
 	virtual string GetFilePartitionValueSource(TableIndex table_id);
+	//! FROM-clause source for a catalog table read by BuildCatalogForSnapshot. When
+	//! snapshot_filtered is set the enclosing query restricts the table to rows live at
+	//! {SNAPSHOT_ID}; backends can apply that restriction server-side in the returned subquery.
+	virtual string GetCatalogTableSource(const string &table_name, bool snapshot_filtered);
 
 	//! Wrap field selections with list aggregation of struct objects (DBMS-specific)
 	//! For DuckDB: LIST({'key1': val1, 'key2': val2, ...})

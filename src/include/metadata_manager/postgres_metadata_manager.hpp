@@ -39,6 +39,9 @@ public:
 
 	vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot, TableIndex table_id) override;
 	unique_ptr<QueryResult> ReadFileColumnStatsForTable(DuckLakeSnapshot snapshot, TableIndex table_id) override;
+	unique_ptr<QueryResult> QueryConflictInfo(DuckLakeSnapshot snapshot, const string &query) override;
+	idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) override;
+	idx_t GetNetInlinedRowCount(const string &inlined_table_name, DuckLakeSnapshot snapshot) override;
 
 protected:
 	string GetLatestSnapshotQuery() const override;
@@ -47,6 +50,7 @@ protected:
 	string GetDeleteFileSource(TableIndex table_id) override;
 	string GetFileColumnStatsJoinSource(TableIndex table_id, idx_t column_field_index) override;
 	string GetFilePartitionValueSource(TableIndex table_id) override;
+	string GetCatalogTableSource(const string &table_name, bool snapshot_filtered) override;
 
 private:
 	unique_ptr<QueryResult> ExecuteQuery(DuckLakeSnapshot snapshot, string &query, string command);
